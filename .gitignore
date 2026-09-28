@@ -1,0 +1,30 @@
+node_modules
+dist
+.env
+.env.local
+.env.*.local
+
+# Local tool/session state
+.claude/
+*.jsonl
+
+# SQLite + journal files
+knowl.db
+knowl.db-shm
+knowl.db-wal
+
+# Database backups (created by cron in server/lib/jobs.js)
+backups/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.log
+
+# Capacitor build artifacts
+ios/App/build/
+ios/App/Pods/
+ios/App/App/public/

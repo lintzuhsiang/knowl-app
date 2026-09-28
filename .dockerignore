@@ -1,0 +1,42 @@
+# Local-only state and toolchain — never copy into image
+node_modules
+npm-debug.log
+
+# SQLite live files — must come from a mounted volume, not the image
+*.db
+*.db-wal
+*.db-shm
+knowl.db*
+backups/
+
+# Build outputs (regenerated inside the image)
+dist
+build
+
+# IDE / OS junk
+.DS_Store
+.vscode
+.idea
+*.swp
+
+# Git
+.git
+.gitignore
+
+# Native mobile shells
+ios/
+android/
+
+# Local env files (env vars come from runtime, not baked in)
+.env
+.env.local
+.env.*.local
+
+# Docs and dev-only tooling
+docs/
+*.md
+.eslintrc*
+.prettier*
+
+# CI artifacts
+.github/

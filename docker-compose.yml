@@ -1,0 +1,63 @@
+# Local prod-like environment.
+#
+# Runs the same Docker image you'd deploy to AWS, against named volumes that
+# mimic the EBS mount points. Useful for:
+#   - Verifying the Dockerfile builds before pushing to CI
+#   - Smoke-testing helmet headers, healthcheck, signal handling locally
+#   - Running the daily backup cron in a sandbox (won't S3 unless you set it)
+#
+# Usage:
+#   cp .env.example .env             # then fill in GEMINI_API_KEY at minimum
+#   docker compose up --build        # builds image + starts api on :3001
+#   docker compose logs -f api       # tail logs
+#   docker compose down              # stop (volumes persist)
+#   docker compose down -v           # stop + WIPE the SQLite volume
+#
+# This is NOT the dev loop — for fast iteration use `npm run dev` instead.
+# This is "test what's about to ship".
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # These get baked into the SPA bundle at build time. Override here for
+        # local testing or omit to ship the served-from-same-origin defaults.
+        VITE_API_BASE: ${VITE_API_BASE:-}
+        VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
+        VITE_SENTRY_RELEASE: ${VITE_SENTRY_RELEASE:-local}
+    image: knowl-api:local
+    container_name: knowl-api
+    restart: unless-stopped
+    ports:
+      - "${KNOWL_API_PORT:-3001}:3001"
+    volumes:
+      # Persistent SQLite + backups — survive `compose down` (not `down -v`)
+      - knowl-data:/data
+      - knowl-backups:/backups
+    env_file:
+      # Read GEMINI_API_KEY / AUTH_SECRET / CORS_ORIGIN / etc. from here.
+      # docker-compose silently no-ops if .env doesn't exist — but the api
+      # won't start without GEMINI_API_KEY, so check the logs.
+      - .env
+    environment:
+      # Force production-y defaults regardless of .env quirks
+      NODE_ENV: production
+      DB_PATH: /data/knowl.db
+      BACKUP_DIR: /backups
+      # `DISABLE_JOBS=1` skips the daily cron — usually what you want when
+      # running locally so you don't burn disk on backup snapshots. Comment
+      # out if you want to exercise the cron path.
+      DISABLE_JOBS: "1"
+    healthcheck:
+      # alpine base has busybox wget — small enough not to need curl
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  knowl-data:
+  knowl-backups:

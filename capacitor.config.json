@@ -1,0 +1,9 @@
+{
+  "appId": "com.knowl.app",
+  "appName": "Knowl",
+  "webDir": "dist",
+  "server": {
+    "url": "http://192.168.254.65:3000",
+    "cleartext": true
+  }
+}
