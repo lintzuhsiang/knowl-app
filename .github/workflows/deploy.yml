@@ -1,0 +1,104 @@
+name: deploy
+
+# Path A deploy — builds Docker image, ships to EC2 over SSH.
+# This is the simplest pipeline that works; swap to ECR/ECS-fargate later
+# when you outgrow single-instance.
+#
+# Required GitHub repo secrets:
+#   EC2_HOST            (e.g. api.knowl.com or the public IP)
+#   EC2_USER            (usually 'ubuntu')
+#   EC2_SSH_KEY         (private key contents; matches the EC2 keypair)
+#   VITE_API_BASE       (e.g. https://api.knowl.com)
+#   VITE_SENTRY_DSN     (optional; empty = frontend Sentry disabled)
+#
+# Secrets that live on the EC2 box (NOT in GitHub):
+#   /etc/knowl/env      file with GEMINI_API_KEY, SENTRY_DSN, AUTH_SECRET,
+#                       CORS_ORIGIN, LLM_DAILY_TOKEN_BUDGET, S3_BACKUP_BUCKET
+#                       etc. — mounted into the container via --env-file.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}  # manual "Run workflow" button
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # If you ever add a test suite, run it here. Right now there isn't one —
+      # see docs/project-state.md §15 (manual smoke tests are the verification).
+      # - run: npm test
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg VITE_API_BASE="${{ secrets.VITE_API_BASE }}" \
+            --build-arg VITE_SENTRY_DSN="${{ secrets.VITE_SENTRY_DSN }}" \
+            --build-arg VITE_SENTRY_RELEASE="${{ github.sha }}" \
+            -t knowl-api:${{ github.sha }} \
+            -t knowl-api:latest \
+            .
+
+      - name: Save image to tarball
+        run: docker save knowl-api:latest | gzip > knowl-api.tar.gz
+
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Ship image to EC2
+        run: |
+          scp -i ~/.ssh/deploy_key knowl-api.tar.gz \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/knowl-api.tar.gz
+
+      - name: Restart container on EC2
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} <<'EOSSH'
+            set -e
+            docker load < /tmp/knowl-api.tar.gz
+            rm /tmp/knowl-api.tar.gz
+
+            # Stop old container if running
+            docker stop knowl-api 2>/dev/null || true
+            docker rm knowl-api 2>/dev/null || true
+
+            # Start new one with persistent volumes mounted from host
+            docker run -d \
+              --name knowl-api \
+              --restart unless-stopped \
+              -p 127.0.0.1:3001:3001 \
+              -v /data:/data \
+              -v /backups:/backups \
+              --env-file /etc/knowl/env \
+              knowl-api:latest
+
+            # Wait a few seconds, then verify healthz responds
+            sleep 5
+            curl -fsS http://127.0.0.1:3001/healthz || (echo "Healthcheck failed"; exit 1)
+            echo "Deploy successful: ${{ github.sha }}"
+          EOSSH
+
+      - name: Notify Sentry of release (if DSN set)
+        if: ${{ secrets.SENTRY_AUTH_TOKEN != '' }}
+        run: |
+          npx @sentry/cli releases new "${{ github.sha }}"
+          npx @sentry/cli releases set-commits "${{ github.sha }}" --auto
+          npx @sentry/cli releases finalize "${{ github.sha }}"
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
